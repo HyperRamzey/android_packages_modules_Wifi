@@ -3868,15 +3868,32 @@ public class WifiServiceImpl extends IWifiManager.Stub {
         if (stats == null) {
             return null;
         }
-        final long rxIdleTimeMillis = stats.on_time - stats.tx_time - stats.rx_time;
-        if (VDBG || rxIdleTimeMillis < 0 || stats.on_time < 0 || stats.tx_time < 0
+        // Some HALs never populate on_time/tx_time.  On this device the vendor
+        // HAL reports radio_on_time_ms=0 and radio_tx_time_ms=0 in every sample
+        // while radio_rx_time_ms and scan_time_ms are populated, so deriving
+        // idle time as on_time - tx_time - rx_time yields exactly -rx_time.
+        // WifiActivityEnergyInfo.isValid() then rejects the whole record inside
+        // BatteryExternalStatsWorker ("wifi info is invalid") and every WiFi
+        // joule is dropped from BatteryStats.  Treat a non-positive on_time as
+        // "not reported", rebuild it from the activity that WAS reported, and
+        // floor the derived idle at 0 so the record survives and RX/TX/scan
+        // energy is attributed instead of discarded.  The log line names the
+        // condition so this branch is never an invisible no-op.
+        final boolean onTimeMissing = stats.on_time <= 0;
+        final long radioOnTimeMillis = onTimeMissing
+                ? (stats.tx_time + stats.rx_time + stats.on_time_scan)
+                : stats.on_time;
+        final long rxIdleTimeMillis = Math.max(0L,
+                radioOnTimeMillis - stats.tx_time - stats.rx_time);
+        if (VDBG || onTimeMissing || stats.on_time < 0 || stats.tx_time < 0
                 || stats.rx_time < 0 || stats.on_time_scan < 0) {
             Log.d(TAG, " getWifiActivityEnergyInfo: "
                     + " on_time_millis=" + stats.on_time
                     + " tx_time_millis=" + stats.tx_time
                     + " rx_time_millis=" + stats.rx_time
                     + " rxIdleTimeMillis=" + rxIdleTimeMillis
-                    + " scan_time_millis=" + stats.on_time_scan);
+                    + " scan_time_millis=" + stats.on_time_scan
+                    + " onTimeMissing=" + onTimeMissing);
         }
         // Convert the LinkLayerStats into WifiActivityEnergyInfo
         return new WifiActivityEnergyInfo(
